@@ -63,24 +63,48 @@ local function check_inventory()
 end
 
 local function dig_chest_chamber()
-    -- Dig a 3x3x3 chamber around the turtle for chest placement
-    for x = -1, 1 do
-        for y = -1, 1 do
-            for z = -1, 1 do
-                if not (x == 0 and y == 0 and z == 0) then
-                    -- Move to position and dig
-                    turtle.dig()
-                    turtle.forward()
-                    turtle.digDown()
-                    turtle.digUp()
-                    -- Return to center (simplified, assume turtle can navigate)
-                end
-            end
-        end
+    -- Dig down 1 to start chamber
+    if not safe_dig("down") then
+        return false
     end
-    -- Place chest in center
-    turtle.select(1) -- Assume chest is in slot 1
-    turtle.place()
+    turtle.down()
+    -- Dig forward 1
+    if not safe_dig("forward") then
+        turtle.up() -- return if can't dig
+        return false
+    end
+    turtle.forward()
+    -- Dig up 1
+    if not safe_dig("up") then
+        turtle.back()
+        turtle.up()
+        return false
+    end
+    turtle.up()
+    -- Dig down 1 again to position for chest
+    if not safe_dig("down") then
+        turtle.down()
+        turtle.back()
+        turtle.up()
+        return false
+    end
+    turtle.down()
+    -- Place chest (assume chest in slot 1)
+    turtle.select(1)
+    if not turtle.place() then
+        -- If can't place, return
+        turtle.up()
+        turtle.back()
+        turtle.up()
+        return false
+    end
+    -- Dump inventory into chest
+    dump_inventory()
+    -- Return to original position: up 1, back 1, up 1
+    turtle.up()
+    turtle.back()
+    turtle.up()
+    return true
 end
 
 local function dump_inventory()
@@ -91,7 +115,7 @@ local function dump_inventory()
 end
 
 local function return_to_surface()
-    -- Assume we track depth or use a simple ascent
+    -- Ascend by digging up until no block above
     while turtle.detectUp() do
         turtle.digUp()
         turtle.up()
@@ -100,6 +124,13 @@ local function return_to_surface()
 end
 
 local function dig_step()
+    -- Dig forward for the step
+    if not safe_dig("forward") then
+        return_to_surface()
+        return false
+    end
+    turtle.forward()
+    -- Dig down for the descent
     if not safe_dig("down") then
         return_to_surface()
         return false
@@ -118,8 +149,10 @@ function main()
     while true do
         refuel()
         if check_inventory() then
-            dig_chest_chamber()
-            dump_inventory()
+            if not dig_chest_chamber() then
+                print_status("Failed to dig chest chamber, stopping.")
+                break
+            end
             turn_and_continue()
         end
         if not dig_step() then
