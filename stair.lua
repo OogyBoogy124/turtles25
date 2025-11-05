@@ -3,7 +3,8 @@
     
     This program creates a straight, descending staircase tunnel (2 blocks forward, 1 block down)
     to a specified depth. It handles refueling and inventory dumping into chests.
-    It then returns to the surface, placing full blocks to form a ramp/staircase and torches.
+    If it detects a hazard (bedrock, water, lava), it will backtrack to the surface.
+    Upon successful completion, it returns to the surface, placing blocks to form a ramp/staircase and torches.
 ]]
 
 -- --- Configuration ---
@@ -88,27 +89,24 @@ local function safe_dig(direction)
     refuel()
     local success, message, block
     
-    -- Ensure the turtle is facing forward for dig/place logic
-    turtle.select(FILL_SLOT) 
-
     if direction == "up" then
         success, block = turtle.inspectUp()
         if success and is_hazardous_block(block.name) then
-            print_status("HAZARD DETECTED above: " .. block.name .. ". Returning to surface.")
+            print_status("HAZARD DETECTED above: " .. block.name .. ". Backtracking to surface.")
             return false, "hazard"
         end
         success, message = turtle.digUp()
     elseif direction == "down" then
         success, block = turtle.inspectDown()
         if success and is_hazardous_block(block.name) then
-            print_status("HAZARD DETECTED below: " .. block.name .. ". Returning to surface.")
+            print_status("HAZARD DETECTED below: " .. block.name .. ". Backtracking to surface.")
             return false, "hazard"
         end
         success, message = turtle.digDown()
     else -- forward
         success, block = turtle.inspect()
         if success and is_hazardous_block(block.name) then
-            print_status("HAZARD DETECTED ahead: " .. block.name .. ". Returning to surface.")
+            print_status("HAZARD DETECTED ahead: " .. block.name .. ". Backtracking to surface.")
             return false, "hazard"
         end
         success, message = turtle.dig()
@@ -118,6 +116,7 @@ local function safe_dig(direction)
         print_status("Encountered liquid. Placing a block.")
         -- If digging forward or down fails due to a liquid, place a filler block
         if direction ~= "up" then
+            turtle.select(FILL_SLOT) -- Select filler block only when needed
             turtle.place()
             safe_sleep()
             -- Try digging again after placing the block
@@ -136,53 +135,6 @@ local function check_inventory()
     return true -- Inventory is full
 end
 
-local function dig_chest_chamber()
-    -- Dig a 3x3x2 chamber to the right for chest placement
-    turtle.turnRight()
-    
-    -- Dig forward into the wall
-    turtle.dig()
-    turtle.forward()
-    
-    -- Dig a small chamber
-    turtle.digUp()
-    turtle.digDown()
-    
-    -- Dig right side
-    turtle.turnRight()
-    turtle.dig()
-    turtle.forward()
-    turtle.digUp()
-    turtle.digDown()
-    
-    -- Dig back wall
-    turtle.turnRight()
-    turtle.dig()
-    turtle.forward()
-    turtle.digUp()
-    turtle.digDown()
-    
-    -- Dig left side
-    turtle.turnRight()
-    turtle.dig()
-    turtle.forward()
-    turtle.digUp()
-    turtle.digDown()
-    
-    -- Return to center of chamber
-    turtle.turnRight()
-    turtle.forward()
-    turtle.forward()
-    turtle.turnLeft()
-    turtle.turnLeft()
-    
-    -- Go back to original position
-    turtle.back()
-    turtle.turnLeft()
-    
-    print_status("Chest chamber dug.")
-end
-
 local function dump_inventory()
     if not check_inventory() then
         return
@@ -192,29 +144,25 @@ local function dump_inventory()
 
     -- 1. Check for chest
     if turtle.getItemCount(CHEST_SLOT) == 0 then
-        print_status("CRITICAL: Out of chests. Returning to surface.")
-        return_to_surface()
+        print_status("CRITICAL: Out of chests. Backtracking to surface.")
+        backtrack_to_surface()
         return
     end
 
-    -- 2. Dig chest chamber and place chest
-    dig_chest_chamber()
+    -- 2. Dig a 1x1 chamber in the wall, place chest, dump, and return
+    print_status("Digging chamber for chest.")
+    turtle.turnRight()
+    turtle.dig()
+    turtle.forward()
+    turtle.turnLeft() -- Face the chest location
     
-    -- Place chest in the chamber
+    print_status("Placing chest and dumping items.")
     turtle.select(CHEST_SLOT)
-    local success, message = turtle.place()
-    
-    if not success then
-        print_status("Failed to place chest: " .. (message or "Unknown"))
-        -- Try to go back to original position
-        turtle.turnRight()
-        turtle.turnRight()
-        turtle.forward()
-        turtle.turnLeft()
-        return -- Cannot dump, continuing is dangerous
+    if not turtle.place() then
+        print_status("Failed to place chest. Backtracking to surface.")
+        backtrack_to_surface()
+        return
     end
-    
-    print_status("Chest placed. Dumping items.")
     safe_sleep()
 
     -- Drop all non-essential items
@@ -234,44 +182,44 @@ local function dump_inventory()
         end
     end
 
-    -- 3. Break the chest and return to tunnel
+    -- 3. Retrieve chest and return to the tunnel
+    print_status("Retrieving chest and resuming tunnel.")
     turtle.dig() -- Break the chest
-    -- Return to original tunnel position
-    turtle.turnRight()
-    turtle.forward()
-    turtle.turnLeft()
-    turtle.turnLeft()
-    turtle.forward()
-    turtle.turnRight()
-    
-    print_status("Loot dumped. Resuming tunnel.")
+    turtle.turnRight() -- Face out of the chamber
+    turtle.back() -- Move back into the main tunnel
+    turtle.turnLeft() -- Face forward down the tunnel
 end
 
-local function return_to_surface()
-    print_status("Returning to surface due to hazard or critical shortage.")
+local function backtrack_to_surface()
+    print_status("Backtracking to surface due to hazard or critical shortage.")
     
-    -- Simple ascent: go up until we can't anymore, then go forward
-    local up_attempts = 0
-    local max_up_attempts = 50 -- Safety limit
-    
-    -- Try to go up repeatedly
-    while up_attempts < max_up_attempts do
+    -- Reverse the dig_step pattern: (1x Up, 2x Back)
+    for step = 1, MAX_STEPS do
+        print_status("Backtrack step " .. step .. " / " .. MAX_STEPS)
+        
+        -- 1. Move up (undo the 1 down move from the dig_step)
         refuel()
-        if turtle.up() then
-            up_attempts = up_attempts + 1
-            safe_sleep()
-        else
+        if not turtle.up() then
+            print_status("Cannot move up. Likely at the surface or blocked.")
             break
         end
-    end
-    
-    -- If we couldn't go up, try going forward (might be at surface level)
-    if up_attempts == 0 then
+        safe_sleep()
+        
+        -- 2. Move backward twice (undo the 2 forward moves from the dig_step)
         refuel()
-        turtle.forward()
+        if not turtle.back() then
+            print_status("Cannot move back. Path may be blocked.")
+            break
+        end
+        refuel()
+        if not turtle.back() then
+            print_status("Cannot move back. Path may be blocked.")
+            break
+        end
+        safe_sleep()
     end
     
-    print_status("Returned to surface. Program ending.")
+    print_status("Backtrack complete. Program ending.")
     error("Surface return triggered.")
 end
 
@@ -283,19 +231,19 @@ local function dig_step()
     -- 1. Forward 1/2
     local success, msg = safe_dig("up")
     if not success and msg == "hazard" then
-        return_to_surface()
+        backtrack_to_surface()
         return
     end
     
     success, msg = safe_dig("forward")
     if not success and msg == "hazard" then
-        return_to_surface()
+        backtrack_to_surface()
         return
     end
     
     if not turtle.forward() then
-        print_status("Cannot move forward. Returning to surface.")
-        return_to_surface()
+        print_status("Cannot move forward. Backtracking to surface.")
+        backtrack_to_surface()
         return
     end
     dump_inventory()
@@ -303,19 +251,19 @@ local function dig_step()
     -- 2. Forward 2/2
     success, msg = safe_dig("up")
     if not success and msg == "hazard" then
-        return_to_surface()
+        backtrack_to_surface()
         return
     end
     
     success, msg = safe_dig("forward")
     if not success and msg == "hazard" then
-        return_to_surface()
+        backtrack_to_surface()
         return
     end
     
     if not turtle.forward() then
-        print_status("Cannot move forward. Returning to surface.")
-        return_to_surface()
+        print_status("Cannot move forward. Backtracking to surface.")
+        backtrack_to_surface()
         return
     end
     dump_inventory()
@@ -323,13 +271,13 @@ local function dig_step()
     -- 3. Step Down
     success, msg = safe_dig("down")
     if not success and msg == "hazard" then
-        return_to_surface()
+        backtrack_to_surface()
         return
     end
     
     if not turtle.down() then
-        print_status("Cannot move down. Returning to surface.")
-        return_to_surface()
+        print_status("Cannot move down. Backtracking to surface.")
+        backtrack_to_surface()
         return
     end
     safe_sleep()
